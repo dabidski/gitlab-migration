@@ -3,6 +3,7 @@ require "gitlab"
 require "csv"
 require "json"
 require "byebug"
+require "logger"
 
 module GitlabMigration
   VERSION = "0.1.0"
@@ -16,22 +17,33 @@ module GitlabMigration
     "accepted" => "Closed"
   }
 
+  Log = Logger.new("output.log")
+  Log.formatter = proc do |severity, datetime, progname, msg|
+    puts msg
+    msg
+  end
+
   def self.migrate_pivotal_project(project_folder:, stories_csv_path:, gitlab_project:, gitlab_epic_id:)
+    Log.info "Parsing #{stories_csv_path}"
     PivotalExportParser.parse(stories_csv_path) do |story_data|
       comments = story_data[:comment]
       owners = story_data[:owned_by]
       story_data[:project] = gitlab_project
       story_data[:epic_id] = gitlab_epic_id
-      
-      issue = convert_to_issue(story_data)
+      Log.info "Converting story ##{story_data[:id]} to issue"
+      issue = convert_to_issue(story_data, project_folder)
       issue.save
     end
   end
 
   private
 
-  def self.convert_to_issue(data)
+  def self.convert_to_issue(data, project_folder)
     Issue.new(data[:project], data[:title]).tap do |issue|
+      # Set pivotal id for logs
+      pivotal_id = data[:id]
+      issue.pivotal_id = pivotal_id
+
       # Set mappable fields
       issue.created_at = data[:created_at]
       issue.description = data[:description]
@@ -57,10 +69,16 @@ module GitlabMigration
       end
 
       # Set pivotal id as label
-      issue.labels.push("piv:id:#{data[:id]}")
+      issue.labels.push("piv:id:#{pivotal_id}")
 
       # Set old pivotal labels
       issue.labels.push(*convert_pivotal_labels(data[:labels])) if data[:labels]
+
+      # Add attachments as one note
+      attachments_folder = File.join(project_folder, pivotal_id)
+      if Dir.exists?(attachments_folder) && !Dir.empty?(attachments_folder)
+        issue.notes.push(AttachmentsNote.new(issue, attachments_folder))
+      end
 
       # Add all old comments as notes
       data[:comment].each_with_index do |comment, idx|
@@ -88,7 +106,8 @@ module GitlabMigration
     end
 
     attr_accessor :id, :project, :title, :labels, :notes, :weight,
-                  :epic_id, :description, :state, :created_at
+                  :epic_id, :description, :state, :created_at,
+                  :pivotal_id
 
     def build_note(author, text, created_at)
       Note.new(self, author, text, created_at).tap do |note|
@@ -97,6 +116,7 @@ module GitlabMigration
     end
 
     def save
+      Log.info "Saving story ##{pivotal_id} as Gitlab issue"
       # Create issue
       attrs = {
         description: description,
@@ -106,6 +126,7 @@ module GitlabMigration
       }
       result = Gitlab.create_issue(project, title, attrs)
       @id = result["iid"]
+      Log.info "Issue ##{id} created."
 
       # Save all notes
       notes.each(&:save)
@@ -129,7 +150,9 @@ module GitlabMigration
 
     def save
       raise "issue not yet saved" if issue.id.nil?
+      Log.info "Saving note to issue ##{issue.id}"
       Gitlab.create_issue_note(issue.project, issue.id, body, created_at: created_at.iso8601)
+      Log.info "Note saved to issue ##{issue.id}"
     end
 
     private
@@ -141,6 +164,27 @@ module GitlabMigration
       else
         text
       end
+    end
+  end
+
+  class AttachmentsNote < Note
+    def initialize(issue, attachments_path)
+      @issue = issue
+      @attachments_path = attachments_path
+      @created_at = issue.created_at
+    end
+
+    def save
+      raise "issue not yet saved" if issue.id.nil?
+      @text = "#### Uploaded Files\r\n\r\n"
+      # Upload each file and use markdown from return value
+      Dir[File.join(@attachments_path, "*")].each do |filepath|
+        Log.info "Uploading file #{filepath} to project ##{issue.project}."
+        result = Gitlab.upload_file(issue.project, filepath)
+        Log.info "File uploaded. URL: #{result['url']}"
+        @text += "*#{result['alt']}*\r\n\r\n#{result['markdown']}\r\n\r\n---\r\n\r\n"
+      end
+      super
     end
   end
 end
