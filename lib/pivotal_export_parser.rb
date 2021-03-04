@@ -13,12 +13,10 @@ class PivotalExportParser
       issue_data = {}
       row.headers.each_with_index do |header, idx|
         if SINGLE_COLUMN_HEADERS.include?(header)
-          if header == :labels
-            issue_data[header] = parse_labels(row[idx])
-          elsif header == :current_state
-            issue_data[header] = format_status(row[idx])
+          if (header == :accepted_at || header == :created_at)
+            issue_data[header] = DateTime.parse(row[idx])
           else
-            issue_data[header] = (header == :accepted_at || header == :created_at) ? DateTime.parse(row[idx]) : row[idx]
+            issue_data[header] = row[idx]
           end
         elsif MULTIPLE_COLUMN_HEADERS.include?(header)
           issue_data[header] ||= []
@@ -39,22 +37,5 @@ class PivotalExportParser
     else
       Comment.new(nil, nil, comment)
     end
-  end
-
-  def self.parse_labels(string_label)
-    string_label.split(',').map{ |label| "piv:#{label.strip}" }
-  end
-
-  def self.format_status(state)
-    status_labels = {
-      "unstarted" => "Unstarted",
-      "started" => "Dev Started",
-      "finished" => "Tl code review",
-      "delivered" => "For deploy to prod",
-      "rejected" => "Update post code review",
-      "accepted" => "Closed"
-    }
-
-    "Sts::#{status_labels[state]}"
   end
 end 
