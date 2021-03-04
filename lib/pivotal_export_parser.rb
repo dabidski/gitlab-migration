@@ -12,6 +12,7 @@ class PivotalExportParser
     CSV.foreach(filepath, headers: true, header_converters: header_converters) do |row|
       issue_data = {}
       row.headers.each_with_index do |header, idx|
+        next if row[idx].nil?
         if SINGLE_COLUMN_HEADERS.include?(header)
           if (header == :accepted_at || header == :created_at)
             issue_data[header] = DateTime.parse(row[idx])
@@ -20,9 +21,7 @@ class PivotalExportParser
           end
         elsif MULTIPLE_COLUMN_HEADERS.include?(header)
           issue_data[header] ||= []
-          if !row[idx].nil?
-            issue_data[header] << (header == :comment ? parse_comment(row[idx]) : row[idx])
-          end
+          issue_data[header] << (header == :comment ? parse_comment(row[idx]) : row[idx])
         end
       end
       yield issue_data

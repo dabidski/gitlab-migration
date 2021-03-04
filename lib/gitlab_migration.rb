@@ -18,9 +18,9 @@ module GitlabMigration
   }
 
   Log = Logger.new("output.log")
+  original_formatter = Logger::Formatter.new
   Log.formatter = proc do |severity, datetime, progname, msg|
-    puts msg
-    msg
+    original_formatter.call(severity, datetime, progname, msg).tap(&method(:puts))
   end
 
   def self.migrate_pivotal_project(project_folder:, stories_csv_path:, gitlab_project:, gitlab_epic_id:)
@@ -56,7 +56,7 @@ module GitlabMigration
         memo.push("|#{key}|#{value}|") if value
         memo
       end.join("\r\n")
-      table_rows_str += "|Owners|#{data[:owned_by].join(', ')}|" if data[:owned_by].any?
+      table_rows_str += "|Owners|#{data[:owned_by].join(', ')}|" if data[:owned_by]&.any?
       table_str = "#### Pivotal Data\r\n| Field | Value |\r\n| ------ | ------ |\r\n"
       issue.build_note(nil, table_str + table_rows_str, data[:created_at])
 
@@ -97,7 +97,27 @@ module GitlabMigration
     "Sts::#{STATUS_TO_LABEL_MAPPING[state.downcase]}"
   end
 
-  class Issue
+  class GitlabObject
+    # Gitlab::Error::TooManyRequests
+    def with_retry(max_retries=3, &block)
+      begin
+        retries ||= 0
+        block.call
+      rescue Gitlab::Error::TooManyRequests
+        if (retries += 1) < max_retries
+          Log.error "Too many requests made. Sleeping for 60 seconds."
+          sleep(60)
+          Log.error "Attempting request again. Retry ##{retries}"
+          retry
+        else
+          Log.error "Max retries reached."
+          raise "Max retries reached"
+        end
+      end
+    end
+  end
+
+  class Issue < GitlabObject
     def initialize(project, title)
       @project = project
       @title = title
@@ -116,7 +136,6 @@ module GitlabMigration
     end
 
     def save
-      Log.info "Saving story ##{pivotal_id} as Gitlab issue"
       # Create issue
       attrs = {
         description: description,
@@ -124,21 +143,27 @@ module GitlabMigration
         labels: labels.join(","),
         epic_id: epic_id
       }
-      result = Gitlab.create_issue(project, title, attrs)
-      @id = result["iid"]
-      Log.info "Issue ##{id} created."
+      with_retry do
+        Log.info "Saving story ##{pivotal_id} as Gitlab issue"
+        result = Gitlab.create_issue(project, title, attrs)
+        @id = result["iid"]
+        Log.info "Issue ##{id} created."
+      end
 
       # Save all notes
       notes.each(&:save)
 
       # Close issue if required
       if state == :closed
-        Gitlab.edit_issue(project, id, state_event: 'close')
+        with_retry do
+          Log.info "Updating issue ##{id} state to close"
+          Gitlab.edit_issue(project, id, state_event: 'close')
+        end
       end
     end
   end
 
-  class Note
+  class Note < GitlabObject
     def initialize(issue, author, text, created_at)
       @issue = issue
       @author = author
@@ -150,9 +175,10 @@ module GitlabMigration
 
     def save
       raise "issue not yet saved" if issue.id.nil?
-      Log.info "Saving note to issue ##{issue.id}"
-      Gitlab.create_issue_note(issue.project, issue.id, body, created_at: created_at.iso8601)
-      Log.info "Note saved to issue ##{issue.id}"
+      with_retry do
+        Log.info "Saving note to issue ##{issue.id}"
+        Gitlab.create_issue_note(issue.project, issue.id, body, created_at: created_at.iso8601)
+      end
     end
 
     private
@@ -179,10 +205,12 @@ module GitlabMigration
       @text = "#### Uploaded Files\r\n\r\n"
       # Upload each file and use markdown from return value
       Dir[File.join(@attachments_path, "*")].each do |filepath|
-        Log.info "Uploading file #{filepath} to project ##{issue.project}."
-        result = Gitlab.upload_file(issue.project, filepath)
-        Log.info "File uploaded. URL: #{result['url']}"
-        @text += "*#{result['alt']}*\r\n\r\n#{result['markdown']}\r\n\r\n---\r\n\r\n"
+        with_retry do
+          Log.info "Uploading file #{filepath} to project ##{issue.project}."
+          result = Gitlab.upload_file(issue.project, filepath)
+          Log.info "File uploaded. URL: #{result['url']}"
+          @text += "*#{result['alt']}*\r\n\r\n#{result['markdown']}\r\n\r\n---\r\n\r\n"
+        end
       end
       super
     end
