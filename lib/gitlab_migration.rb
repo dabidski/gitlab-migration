@@ -2,6 +2,7 @@ require "pivotal_export_parser"
 require "gitlab"
 require "csv"
 require "json"
+require "byebug"
 
 module GitlabMigration
   VERSION = "0.1.0"
@@ -15,47 +16,58 @@ module GitlabMigration
     "accepted" => "Closed"
   }
 
-  def self.migrate_pivotal_project(project_folder:, gitlab_project_name:, epic_name:)
-    PivotalExportParser.parse(project_folder) do |story_data|
+  def self.migrate_pivotal_project(project_folder:, stories_csv_path:, gitlab_project:, gitlab_epic_id:)
+    PivotalExportParser.parse(stories_csv_path) do |story_data|
       comments = story_data[:comment]
       owners = story_data[:owned_by]
-      story_data[:project_name] = gitlab_project_name
-      [:id, :title, :labels, :type, :estimate, :current_state, :created_at,
-        :accepted_at, :requested_by, :description, :url]
+      story_data[:project] = gitlab_project
+      story_data[:epic_id] = gitlab_epic_id
       
       issue = convert_to_issue(story_data)
+      issue.save
     end
   end
 
   private
 
   def self.convert_to_issue(data)
-    Issue.new(data[:project_name], data[:title]).tap do |issue|
+    Issue.new(data[:project], data[:title]).tap do |issue|
+      # Set mappable fields
+      issue.created_at = data[:created_at]
+      issue.description = data[:description]
+      issue.epic_id = data[:epic_id]
+      issue.weight = data[:estimate]
+
       # Add unmappable fields as a note
-      other_data = data.slice(:id, :type, :estimate, :requested_by, :accepted_at, :url)
-      other_data_str = other_data.inject("") do |str, (key, value)|
-        str << "#{key}: #{value}"
-      end
-      issue.build_note("PivotalData", other_data_str, data[:created_at])
+      other_data = data.slice(:id, :type, :requested_by, :accepted_at, :url)
+      table_rows_str = other_data.inject([]) do |memo, (key, value)|
+        memo.push("|#{key}|#{value}|") if value
+        memo
+      end.join("\r\n")
+      table_rows_str += "|Owners|#{data[:owned_by].join(', ')}|" if data[:owned_by].any?
+      table_str = "#### Pivotal Data\r\n| Field | Value |\r\n| ------ | ------ |\r\n"
+      issue.build_note(nil, table_str + table_rows_str, data[:created_at])
 
       # Set status label
       if data[:current_state] != "accepted"
         issue.state = :opened
-        issue.labels << convert_pivotal_status(data[:current_state])
+        issue.labels.push(convert_pivotal_status(data[:current_state]))
       else
         issue.state = :closed
       end
 
       # Set pivotal id as label
-      issue.labels.push("piv:id:#{id}")
+      issue.labels.push("piv:id:#{data[:id]}")
 
       # Set old pivotal labels
-      issue.labels.push(*convert_pivotal_labels(data[:labels]))
+      issue.labels.push(*convert_pivotal_labels(data[:labels])) if data[:labels]
 
       # Add all old comments as notes
-      issue.notes = data[:comments].map do |comment|
-        issue.build_note(comment.author, comment.text, comment.created_at)
-      end
+      data[:comment].each_with_index do |comment, idx|
+        # pivotal export did not include timestamp for comments so we need to
+        # add a second between each comment to ensure we get correct ordering
+        issue.build_note(comment.author, comment.text, comment.created_at + idx + 1)
+      end if data[:comment]
     end
   end
 
@@ -68,18 +80,18 @@ module GitlabMigration
   end
 
   class Issue
-    def initialize(project:, title:)
-      @project_name = project
+    def initialize(project, title)
+      @project = project
       @title = title
       @notes = []
       @labels = []
     end
 
-    attr_accessor :id, :project_name, :title, :labels, :notes,
-                  :epic_name, :description, :state, :created_at
+    attr_accessor :id, :project, :title, :labels, :notes, :weight,
+                  :epic_id, :description, :state, :created_at
 
     def build_note(author, text, created_at)
-      Note.new(self, comment.author, comment.text, comment.created_at).tap do |note|
+      Note.new(self, author, text, created_at).tap do |note|
         notes << note
       end
     end
@@ -88,25 +100,27 @@ module GitlabMigration
       # Create issue
       attrs = {
         description: description,
-        created_at: created_at.iso8601
+        created_at: created_at.iso8601,
+        labels: labels.join(","),
+        epic_id: epic_id
       }
-      result = Gitlab.create_issue(project_name, title, attrs)
-      id = result["id"]
+      result = Gitlab.create_issue(project, title, attrs)
+      @id = result["iid"]
 
       # Save all notes
       notes.each(&:save)
 
       # Close issue if required
       if state == :closed
-        Gitlab.edit_issue(project_name, id, title, state_event: 'close')
+        Gitlab.edit_issue(project, id, state_event: 'close')
       end
     end
   end
 
   class Note
-    def initialize(issue:, author:, text:, created_at:)
+    def initialize(issue, author, text, created_at)
       @issue = issue
-      @author = author,
+      @author = author
       @text = text
       @created_at = created_at
     end
@@ -115,14 +129,18 @@ module GitlabMigration
 
     def save
       raise "issue not yet saved" if issue.id.nil?
-      Gitlab.create_issue_note(issue.project_name, issue.id, body, created_at: created_at.iso8601)
+      Gitlab.create_issue_note(issue.project, issue.id, body, created_at: created_at.iso8601)
     end
 
     private
 
     # We're not able to set the user so the note is prepended with author name
     def body
-      "#{author}: #{text}"
+      if author
+        "**#{author}**: #{text}"
+      else
+        text
+      end
     end
   end
 end

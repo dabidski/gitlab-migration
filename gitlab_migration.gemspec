@@ -1,11 +1,10 @@
 
 lib = File.expand_path("../lib", __FILE__)
 $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
-require "gitlab_migration"
 
 Gem::Specification.new do |spec|
   spec.name          = "gitlab_migration"
-  spec.version       = GitlabMigration::VERSION
+  spec.version       = "0.1.0"
   spec.authors       = ["David Sumulong"]
   spec.email         = ["dabidski@users.noreply.github.com"]
 
