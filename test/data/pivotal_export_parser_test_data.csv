@@ -1,0 +1,35 @@
+Id,Title,Labels,Iteration,Iteration Start,Iteration End,Type,Estimate,Current State,Created at,Accepted at,Deadline,Requested By,Description,URL,Owned By,Owned By,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment,Comment
+161580207,Expose extra metadata fields for documents & folders [part 1 - simple fields],"",1,"Oct 29, 2018","Nov 4, 2018",feature,1,accepted,"Oct 30, 2018","Nov 2, 2018",,Karl Anderson,"Short description",https://www.pivotaltracker.com/story/show/161580207,,,"Commit by David Sumulong
+https://github.com/khanderson/safelink/commit/7d423e3b0c2bcdde5246b900b12bd0776077b846
+
+[Delivers #161580207] Expose more document metadata. Expose document folder metadata. (David Sumulong - Oct 30, 2018)","Commit by David Sumulong
+https://github.com/khanderson/safelink/commit/bc1fd76883cbe53c1b3318a6520e8a7bb4c85b09
+
+Expose more document metadata. Expose document folder metadata. (#415) [Delivers #161580207] (David Sumulong - Nov 1, 2018)",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+161714920,Unable to add documents to Ocorian Room,"ocorian, qa2",2,"Nov 5, 2018","Nov 11, 2018",bug,,accepted,"Nov 5, 2018","Nov 6, 2018",,Karl Anderson,"Ticket ID: 19096, 
+Requester: amy.bath@propelr.net, 
+Description: When testing the Ocorian room, I am unable to add documents.
+I'm in the Ocorian Safelink Development Room (Client Portal) QA2
+
+Currently there are no documents uploaded and there is not a documents tab available. When I try to upload I get an error message (screen shot attached)
+Documents is one of the apps that is enabled, so I would expect that this room should have the functionality to load documents 
+
+",https://www.pivotaltracker.com/story/show/161714920,Amy Bath,David Sumulong," (Amy Bath - Nov 5, 2018)"," @amybath I've updated the room to have the required folder `UPLOAD` so the Upload page should now work.
+I've updated it's folder permissions to be similar to the one in production as well. (David Sumulong - Nov 5, 2018)","  @amybath can I leave this for you to accept or reject please? (Karl Anderson - Nov 6, 2018)","Yes, I'll take a look now (Amy Bath - Nov 6, 2018)",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+161580247,Expose inherited metadata fields for documents & folders [part 3 - with inheritance],"api, seeunity",3,"Nov 12, 2018","Nov 18, 2018",feature,3,accepted,"Oct 30, 2018","Nov 16, 2018",,Karl Anderson,"Please can we, only on the rails3_branch:
+
+* Extend CodingFields so that we can attach them to rooms (ie. add Room to the options for :item_type)
+* Further extend CodingFields to have a ""cascade"" field, only for item_type==:Room, defaulting to false, description ""Cascade this field to documents and folders in the Safelink API"".
+* Extend the field editor UI accordingly
+* Add an ""Extended Properties"" section to the Manage Room (rooms#edit) form if any coding fields are defined for the room, allowing room managers to see and update these values.
+* Add a :handler to hooks.rb called :init, with description ""Initialise your app when it is installed or upgraded"".  This would be the first handler; handlers should be able to accept arguments but return nothing.
+* Don't implement :init properly yet, I'm not sure how we'll detect upgrades, but do add a ""Re-initialise"" link next to the edit link in the app listing on manage room pages.  This will be kinda temporary, and only available to people with call_any_function rights.  Calling this will trigger the relevant :init handler, if the app is actually enabled.  Later, we'll actually detect app installations and upgrades and have it trigger automatically.
+* Extend the metadata API (it'll end up being in HybridMetadata) to automatically include fields cascaded from the room into Documents and DocumentFolders, if any are defined and have cascade == true.   This would affect list_fields and metadata_values_for, at least, and maybe other places.
+* Add an MC function called create_or_update_metadata_field that can be called like this:create_or_update_metadata_field(item_type: ""Room"", name: ""partner_name"", value_type: ""text"", cascade: true), with cascade defaulting to false.  This function should create or update based on the key of [current_room, name, item_type].
+
+Then, create an MC app (in the MC UI) called Ocorian SeeUnity Integration, and give it an init hook that creates the room metadata fields if they don't exist.  The first and only field we need is ""Partner Name"", of type :text.  We can download that app as JSON and deploy it into the relevant QA/prod environment when it's needed.",https://www.pivotaltracker.com/story/show/161580247,David Sumulong,,"Ocorian SeeUnity Integration custom app backup (David Sumulong - Nov 8, 2018)","Commit by khanderson
+https://github.com/khanderson/safelink/commit/199b810f55f0d266a504cac54c19e38f61cd7005
+
+Merge pull request #428 (Metadata inheritance + MC App init hook) [#161580247]
+
+Metadata inheritance + MC App init hook (Karl Anderson - Nov 9, 2018)",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
