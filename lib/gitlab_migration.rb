@@ -75,8 +75,8 @@ module GitlabMigration
       @labels = []
     end
 
-    attr_accessible :id, :project_name, :title, :labels, :notes,
-                    :epic_name, :description, :state, :created_at
+    attr_accessor :id, :project_name, :title, :labels, :notes,
+                  :epic_name, :description, :state, :created_at
 
     def build_note(author, text, created_at)
       Note.new(self, comment.author, comment.text, comment.created_at).tap do |note|
@@ -111,7 +111,7 @@ module GitlabMigration
       @created_at = created_at
     end
 
-    attr_accessible :issue, :author, :text, :created_at
+    attr_accessor :issue, :author, :text, :created_at
 
     def save
       raise "issue not yet saved" if issue.id.nil?
