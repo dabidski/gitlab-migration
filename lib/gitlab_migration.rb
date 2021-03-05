@@ -36,6 +36,18 @@ module GitlabMigration
     end
   end
 
+  def self.get_user_id(project, name)
+    @project_user_list ||= {}
+    @project_user_list[project] ||= UserList.new(project)
+    @project_user_list[project].get_id(name)
+  end
+
+  def self.get_username(project, name)
+    @project_user_list ||= {}
+    @project_user_list[project] ||= UserList.new(project)
+    @project_user_list[project].get_username(name)
+  end
+
   private
 
   def self.convert_to_issue(data, project_folder)
@@ -47,11 +59,17 @@ module GitlabMigration
       # Set mappable fields
       issue.created_at = data[:created_at]
       issue.description = data[:description]
-      issue.epic_id = data[:epic_id]
+      # issue.epic_id = data[:epic_id] # not working atm
       issue.weight = data[:estimate]
+      # accepted_at does not include time so we set this to end of day
+      # so it appears at the end of the history in case comments 
+      # were made on the same day
+      if data[:accepted_at]
+        issue.closed_at = data[:accepted_at] + (23*60*60) + (59 * 60)
+      end
 
       # Add unmappable fields as a note
-      other_data = data.slice(:id, :type, :requested_by, :accepted_at, :url)
+      other_data = data.slice(:id, :type, :requested_by, :url)
       table_rows_str = other_data.inject([]) do |memo, (key, value)|
         memo.push("|#{key}|#{value}|") if value
         memo
@@ -59,6 +77,12 @@ module GitlabMigration
       table_rows_str += "|Owners|#{data[:owned_by].join(', ')}|" if data[:owned_by]&.any?
       table_str = "#### Pivotal Data\r\n| Field | Value |\r\n| ------ | ------ |\r\n"
       issue.build_note(nil, table_str + table_rows_str, data[:created_at])
+
+      # Set assignees
+      data[:owned_by].each do |owner|
+        assignee_id = GitlabMigration.get_user_id(issue.project, owner)
+        issue.assignee_ids.push(assignee_id) if assignee_id
+      end if data[:owned_by]
 
       # Set status label
       if data[:current_state] != "accepted"
@@ -70,6 +94,9 @@ module GitlabMigration
 
       # Set pivotal id as label
       issue.labels.push("piv:id:#{pivotal_id}")
+
+      # Set epic_id as label
+      issue.labels.push("epic::#{data[:epic_id]}")
 
       # Set old pivotal labels
       issue.labels.push(*convert_pivotal_labels(data[:labels])) if data[:labels]
@@ -113,7 +140,53 @@ module GitlabMigration
           Log.error "Max retries reached."
           raise "Max retries reached"
         end
+      rescue Gitlab::Error::InternalServerError
+        if (retries +1) < max_retries
+          Log.error "Server responded with code 500."
+          sleep(5)
+          Log.error "Attempting request again. Retry ##{retries}"
+          retry
+        else
+          raise "Max retries reached"
+        end
       end
+    end
+
+    def with_sudo(name, &block)
+      # disable for now since sudo doesn't work unless for non-admin users.
+      # Gitlab.sudo = name ? GitlabMigration.get_username(project, name) : nil
+      block.call
+      # Gitlab.sudo = nil
+    end
+  end
+
+  class UserList < GitlabObject
+    def initialize(project)
+      @project = project
+      with_retry do
+        Log.info "Collecting users info for project ##{project}"
+        @user_info_by_name = Gitlab.all_members(project).inject({}) do |memo, user|
+          memo[clean_name(user.name)] = { id: user.id, username: user.username }
+          memo
+        end
+        Log.info "Got #{@user_info_by_name.count} user infos"
+      end
+    end
+
+    attr_accessor :project
+
+    def get_id(name)
+      @user_info_by_name.fetch(clean_name(name), {})[:id]
+    end
+
+    def get_username(name)
+      @user_info_by_name.fetch(clean_name(name), {})[:username]
+    end
+    
+    private
+
+    def clean_name(name)
+      name.strip.downcase
     end
   end
 
@@ -123,11 +196,12 @@ module GitlabMigration
       @title = title
       @notes = []
       @labels = []
+      @assignee_ids = []
     end
 
     attr_accessor :id, :project, :title, :labels, :notes, :weight,
                   :epic_id, :description, :state, :created_at,
-                  :pivotal_id
+                  :pivotal_id, :closed_at, :assignee_ids
 
     def build_note(author, text, created_at)
       Note.new(self, author, text, created_at).tap do |note|
@@ -141,7 +215,8 @@ module GitlabMigration
         description: description,
         created_at: created_at.iso8601,
         labels: labels.join(","),
-        epic_id: epic_id
+        epic_id: epic_id,
+        assignee_ids: assignee_ids
       }
       with_retry do
         Log.info "Saving story ##{pivotal_id} as Gitlab issue"
@@ -157,7 +232,7 @@ module GitlabMigration
       if state == :closed
         with_retry do
           Log.info "Updating issue ##{id} state to close"
-          Gitlab.edit_issue(project, id, state_event: 'close')
+          Gitlab.edit_issue(project, id, state_event: 'close', updated_at: closed_at.iso8601)
         end
       end
     end
@@ -176,8 +251,10 @@ module GitlabMigration
     def save
       raise "issue not yet saved" if issue.id.nil?
       with_retry do
-        Log.info "Saving note to issue ##{issue.id}"
-        Gitlab.create_issue_note(issue.project, issue.id, body, created_at: created_at.iso8601)
+        with_sudo(author) do
+          Log.info "Saving note to issue ##{issue.id}"
+          Gitlab.create_issue_note(project, issue.id, body, created_at: created_at.iso8601)
+        end
       end
     end
 
@@ -190,6 +267,10 @@ module GitlabMigration
       else
         text
       end
+    end
+
+    def project
+      issue.project
     end
   end
 
@@ -206,7 +287,7 @@ module GitlabMigration
       # Upload each file and use markdown from return value
       Dir[File.join(@attachments_path, "*")].each do |filepath|
         with_retry do
-          Log.info "Uploading file #{filepath} to project ##{issue.project}."
+          Log.info "Uploading file #{filepath} to project ##{project}."
           result = Gitlab.upload_file(issue.project, filepath)
           Log.info "File uploaded. URL: #{result['url']}"
           @text += "*#{result['alt']}*\r\n\r\n#{result['markdown']}\r\n\r\n---\r\n\r\n"
