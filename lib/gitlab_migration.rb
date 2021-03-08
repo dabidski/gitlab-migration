@@ -33,6 +33,8 @@ module GitlabMigration
       Log.info "Converting story ##{story_data[:id]} to issue"
       issue = convert_to_issue(story_data, project_folder)
       issue.save
+    rescue StandardError => e
+      Log.error "Error encountered during conversion of #{story_data[:id]} for #{story_data[:epic_id]}: #{e.message}"
     end
   end
 
@@ -68,7 +70,7 @@ module GitlabMigration
         issue.closed_at = data[:accepted_at] + (23*60*60) + (59 * 60)
       end
 
-      # Add unmappable fields as a note
+      # Add unmappable fields at the end of description
       other_data = data.slice(:id, :type, :requested_by, :url)
       table_rows_str = other_data.inject([]) do |memo, (key, value)|
         memo.push("|#{key}|#{value}|") if value
@@ -76,7 +78,7 @@ module GitlabMigration
       end.join("\r\n")
       table_rows_str += "|Owners|#{data[:owned_by].join(', ')}|" if data[:owned_by]&.any?
       table_str = "#### Pivotal Data\r\n| Field | Value |\r\n| ------ | ------ |\r\n"
-      issue.build_note(nil, table_str + table_rows_str, data[:created_at])
+      issue.description += "\r\n\r\n" + table_str + table_rows_str
 
       # Set assignees
       data[:owned_by].each do |owner|
