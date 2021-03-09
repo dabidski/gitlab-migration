@@ -26,6 +26,7 @@ module GitlabMigration
   def self.migrate_pivotal_project(project_folder:, stories_csv_path:, gitlab_project:, gitlab_epic_id:)
     Log.info "Parsing #{stories_csv_path}"
     PivotalExportParser.parse(stories_csv_path) do |story_data|
+      return if story_data[:type].nil? || story_data[:type] == :epic
       comments = story_data[:comment]
       owners = story_data[:owned_by]
       story_data[:project] = gitlab_project
@@ -60,7 +61,7 @@ module GitlabMigration
 
       # Set mappable fields
       issue.created_at = data[:created_at]
-      issue.description = data[:description]
+      issue.description = data.fetch(:description, "")
       # issue.epic_id = data[:epic_id] # not working atm
       issue.weight = data[:estimate]
       # accepted_at does not include time so we set this to end of day
